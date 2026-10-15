@@ -1,0 +1,55 @@
+{
+  "name": "@jaralabs/codex-bridge",
+  "version": "0.1.0",
+  "private": false,
+  "description": "OpenAI-compatible HTTP bridge that reuses a local ChatGPT Business / Team / Plus session via codex, so OpenCode can list and call those models without paying for the OpenAI API.",
+  "type": "module",
+  "main": "lib/server.mjs",
+  "exports": {
+    ".": "./lib/server.mjs",
+    "./sync": "./lib/sync-cache.mjs",
+    "./plugin": "./lib/plugin.ts"
+  },
+  "bin": {
+    "codex-bridge": "bin/codex-bridge"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "bin/codex-bridge start",
+    "stop": "bin/codex-bridge stop",
+    "status": "bin/codex-bridge status",
+    "sync": "bin/codex-bridge sync",
+    "logs": "bin/codex-bridge logs",
+    "test": "node test/test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaralabs/codex-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jaralabs/codex-bridge/issues"
+  },
+  "keywords": [
+    "opencode",
+    "chatgpt",
+    "codex",
+    "openai-compatible",
+    "bridge",
+    "subscription",
+    "coding-agent"
+  ],
+  "author": "Andrew Jaramillo <javamillog1999@outlook.com>",
+  "license": "MIT"
+}

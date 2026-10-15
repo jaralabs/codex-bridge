@@ -1,0 +1,193 @@
+#!/usr/bin/env node
+// codex-bridge CLI: entry point for `codex-bridge start|stop|status|sync|logs`.
+// Resolves the package root via npm CLI conventions so paths work whether the
+// package is installed globally, locally, or run from a checkout.
+
+import { spawn } from "node:child_process";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  createWriteStream,
+  unlinkSync,
+} from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const PKG_ROOT = dirname(__dirname);
+
+const PORT = process.env.PORT || "11434";
+const HOST = process.env.HOST || "127.0.0.1";
+const PID_FILE = process.env.CODEX_BRIDGE_PID || "/tmp/codex-bridge.pid";
+const LOG_FILE = process.env.CODEX_BRIDGE_LOG || "/tmp/codex-bridge.log";
+
+function log(level, msg, extra) {
+  const line = JSON.stringify({
+    t: new Date().toISOString(),
+    src: "codex-bridge",
+    level,
+    msg,
+    ...(extra || {}),
+  });
+  process.stderr.write(line + "\n");
+}
+
+function readAuth() {
+  // Sanity-check that codex is logged in. We don't use the tokens
+  // directly — `codex exec` does — but we want to fail fast with a
+  // helpful message if the user hasn't run `codex login`.
+  const home = process.env.HOME || "/tmp";
+  const authPath = join(home, ".codex", "auth.json");
+  if (!existsSync(authPath)) return null;
+  try {
+    return JSON.parse(readFileSync(authPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function runSync() {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [join(PKG_ROOT, "lib", "sync-cache.mjs")], {
+      stdio: "inherit",
+      env: { ...process.env, CODEX_HOME: process.env.CODEX_HOME || join(process.env.HOME || "/tmp", ".codex") },
+    });
+    child.on("close", (code) => resolve(code ?? 0));
+  });
+}
+
+async function startServer() {
+  if (existsSync(PID_FILE)) {
+    const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
+    try {
+      process.kill(pid, 0);
+      log("info", "already running", { pid, port: PORT });
+      process.stdout.write(`codex-bridge already running (pid ${pid}) on http://${HOST}:${PORT}\n`);
+      return 0;
+    } catch {
+      // Stale PID file; proceed to start.
+    }
+  }
+
+  const auth = readAuth();
+  if (!auth || auth.auth_mode !== "chatgpt") {
+    process.stderr.write("⚠️  No ChatGPT session found at ~/.codex/auth.json.\n");
+    process.stderr.write("   Run 'codex login' once before starting codex-bridge.\n");
+    return 1;
+  }
+  if (!auth.tokens?.access_token) {
+    process.stderr.write("⚠️  auth.json has no access_token. Re-run 'codex login'.\n");
+    return 1;
+  }
+
+  await runSync();
+
+  const out = process.stdout;
+  const err = process.stderr;
+  const logStream = createWriteStream(LOG_FILE, { flags: "a" });
+  const child = spawn(process.execPath, [join(PKG_ROOT, "lib", "server.mjs")], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      CODEX_HOME: process.env.CODEX_HOME || join(process.env.HOME || "/tmp", ".codex"),
+      PORT,
+      HOST,
+    },
+  });
+  child.stdout.pipe(logStream);
+  child.stderr.pipe(logStream);
+  // Also surface stderr to the controlling terminal for the first ~1s so the
+  // user sees the "listening" banner immediately, then silence stdout.
+  child.stderr.pipe(err, { end: false });
+  writeFileSync(PID_FILE, String(child.pid));
+
+  // Wait for the bridge to come up (or fail).
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch(`http://${HOST}:${PORT}/v1/models`);
+      if (r.ok) {
+        out.write(`codex-bridge up on http://${HOST}:${PORT} (pid ${child.pid})\n`);
+        // Now disown: closing stdout/stderr handles would kill the child.
+        child.stdout.unpipe();
+        child.stderr.unpipe(err);
+        child.stdout.unpipe(logStream);
+        child.stderr.unpipe(logStream);
+        child.stdout.on("data", () => {});
+        child.stderr.on("data", () => {});
+        return 0;
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return 1;
+}
+
+function stopServer() {
+  if (!existsSync(PID_FILE)) {
+    process.stdout.write("codex-bridge not running\n");
+    return 0;
+  }
+  const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {}
+  // Give it a moment, then SIGKILL.
+  setTimeout(() => {
+    try {
+      process.kill(pid, 0);
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  }, 300);
+  try { unlinkSync(PID_FILE); } catch {}
+  process.stdout.write(`codex-bridge stopped (pid ${pid})\n`);
+  return 0;
+}
+
+function statusServer() {
+  if (!existsSync(PID_FILE)) {
+    process.stdout.write("codex-bridge stopped\n");
+    return 1;
+  }
+  const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
+  try {
+    process.kill(pid, 0);
+    process.stdout.write(`codex-bridge running (pid ${pid}) on http://${HOST}:${PORT}\n`);
+    return 0;
+  } catch {
+    process.stdout.write("codex-bridge stopped (stale pid file)\n");
+    return 1;
+  }
+}
+
+async function tailLogs() {
+  const tail = spawn("tail", ["-n", "100", "-f", LOG_FILE], { stdio: "inherit" });
+  await new Promise((resolve) => {
+    tail.on("exit", resolve);
+    process.on("SIGINT", () => tail.kill("SIGTERM"));
+  });
+}
+
+const [, , cmd] = process.argv;
+
+switch (cmd) {
+  case "start":
+    process.exit(await startServer());
+  case "stop":
+    process.exit(stopServer());
+  case "status":
+    process.exit(statusServer());
+  case "sync": {
+    const code = await runSync();
+    process.exit(code);
+  }
+  case "logs":
+    await tailLogs();
+    process.exit(0);
+  default: {
+    process.stderr.write("usage: codex-bridge {start|stop|status|sync|logs}\n");
+    process.exit(2);
+  }
+}

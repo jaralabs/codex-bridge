@@ -18,13 +18,20 @@ on:
 
 jobs:
   test:
+    # Run the test suite on the three Node majors we support. Catches
+    # regressions where a new Node release changes fetch semantics,
+    # AbortSignal handling, or anything else the bridge depends on.
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["20", "22", "24"]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: ${{ matrix.node-version }}
 
       - name: Install dependencies
         run: npm ci || npm install

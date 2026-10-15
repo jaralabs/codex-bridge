@@ -32,7 +32,8 @@
     "status": "bin/codex-bridge status",
     "sync": "bin/codex-bridge sync",
     "logs": "bin/codex-bridge logs",
-    "test": "node test/test.mjs"
+    "test": "node test/test.mjs",
+    "test:tools": "node test/test-tools.mjs"
   },
   "repository": {
     "type": "git",
@@ -51,5 +52,9 @@
     "coding-agent"
   ],
   "author": "Andrew Jaramillo <javamillog1999@outlook.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
 }

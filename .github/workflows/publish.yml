@@ -86,6 +86,15 @@ jobs:
     needs: [test]
     if: github.event_name != 'pull_request' && github.event_name != 'schedule'
     runs-on: ubuntu-latest
+    # Trusted publishing: actions/setup-node with registry-url exchanges
+    # the GitHub OIDC token for a short-lived npm token at runtime.
+    # The trusted publisher is configured on the package itself
+    # (https://www.npmjs.com/package/@jaralabs/codex-bridge -> Settings
+    # -> Trusted Publishers -> jaralabs/codex-bridge / publish.yml),
+    # so no NPM_TOKEN secret is required.
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -107,9 +116,7 @@ jobs:
 
       - name: Dry-run on pull requests
         if: github.event_name == 'pull_request'
-        run: npm publish --dry-run --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --dry-run
 
       - name: Publish on main when the version moved
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -125,6 +132,4 @@ jobs:
             exit 0
           fi
           echo "skipped=false" >> "$GITHUB_OUTPUT"
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          npm publish

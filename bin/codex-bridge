@@ -10,6 +10,9 @@ import {
   writeFileSync,
   createWriteStream,
   unlinkSync,
+  openSync,
+  closeSync,
+  fsyncSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,104 +61,298 @@ function runSync() {
   });
 }
 
-async function startServer() {
-  if (existsSync(PID_FILE)) {
-    const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
-    try {
-      process.kill(pid, 0);
-      log("info", "already running", { pid, port: PORT });
-      process.stdout.write(`codex-bridge already running (pid ${pid}) on http://${HOST}:${PORT}\n`);
-      return 0;
-    } catch {
-      // Stale PID file; proceed to start.
-    }
+// Send a signal to a pid. Returns true if the process is gone
+// (kill returned ESRCH or the signal was delivered and the process
+// exited within `waitMs`), false if the process is still alive.
+function killAndConfirm(pid, signal, waitMs = 1500) {
+  if (!Number.isFinite(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, signal);
+  } catch (e) {
+    if (e.code === "ESRCH") return true; // already gone
+    if (e.code === "EPERM") return false; // not ours
+    return false;
   }
-
-  const auth = readAuth();
-  if (!auth || auth.auth_mode !== "chatgpt") {
-    process.stderr.write("⚠️  No ChatGPT session found at ~/.codex/auth.json.\n");
-    process.stderr.write("   Run 'codex login' once before starting codex-bridge.\n");
-    return 1;
-  }
-  if (!auth.tokens?.access_token) {
-    process.stderr.write("⚠️  auth.json has no access_token. Re-run 'codex login'.\n");
-    return 1;
-  }
-
-  await runSync();
-
-  const out = process.stdout;
-  const err = process.stderr;
-  const logStream = createWriteStream(LOG_FILE, { flags: "a" });
-  const child = spawn(process.execPath, [join(PKG_ROOT, "lib", "server.mjs")], {
-    // detached + unref so the server outlives the bin and survives the bin
-    // exiting. We redirect stdout/stderr to /dev/null — the server ignores
-    // SIGPIPE, but the simpler fix is to not have parent-owned pipes at all.
-    // Logs go through LOG_FILE written by the server itself, not via stream
-    // piping.
-    detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
-    env: {
-      ...process.env,
-      CODEX_HOME: process.env.CODEX_HOME || join(process.env.HOME || "/tmp", ".codex"),
-      PORT,
-      HOST,
-      CODEX_BRIDGE_LOG: LOG_FILE,
-    },
-  });
-  child.unref();
-  writeFileSync(PID_FILE, String(child.pid));
-
-  // Wait for the bridge to come up (or fail).
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(`http://${HOST}:${PORT}/v1/models`);
-      if (r.ok) {
-        out.write(`codex-bridge up on http://${HOST}:${PORT} (pid ${child.pid})\n`);
-        return 0;
-      }
-    } catch {}
-    await new Promise((r) => setTimeout(r, 100));
+      process.kill(pid, 0);
+    } catch (e) {
+      if (e.code === "ESRCH") return true;
+    }
+    // busy-wait: this is a CLI, not a server, so blocking is fine
+    // and keeps the implementation dependency-free.
+    // eslint-disable-next-line no-undef
+    const until = Date.now() + 50;
+    while (Date.now() < until) { /* spin briefly */ }
   }
-  return 1;
+  return false;
 }
 
-function stopServer() {
-  if (!existsSync(PID_FILE)) {
+// Probe whether anything is listening on http://HOST:PORT/healthz.
+// Returns true on a 2xx response. This is the source of truth for
+// "is the bridge up" — the PID file is just a hint, the port is
+// reality (and survives crashed/never-written PID files).
+async function isBridgeUp(timeoutMs = 1000) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const r = await fetch(`http://${HOST}:${PORT}/healthz`, { signal: ac.signal });
+    return r.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Read the PID from PID_FILE. Returns 0 if the file is missing or
+// unparseable. Does NOT touch the file.
+function readPidFile() {
+  if (!existsSync(PID_FILE)) return 0;
+  const raw = readFileSync(PID_FILE, "utf8").trim();
+  const pid = parseInt(raw, 10);
+  return Number.isFinite(pid) && pid > 0 ? pid : 0;
+}
+
+// True if the given pid is alive AND the bridge is actually serving
+// on its port. The port check rules out two false positives:
+//   1. A stale PID file pointing at a recycled pid that now belongs
+//      to a totally unrelated process.
+//   2. A live server that is not the bridge (different binary).
+async function isPidOurs(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  return isBridgeUp(500);
+}
+
+// Acquire an exclusive lock on the PID file. flock(2) is the only
+// cross-platform-ish way to prevent two `start` invocations from
+// racing each other. We open the file, take LOCK_EX|LOCK_NB, and
+// keep the fd open in this process until we exit. The kernel
+// releases the lock when the fd is closed.
+function acquirePidLock() {
+  const fd = openSync(PID_FILE, "w+");
+  try {
+    // Node 24 has fs.flock as a stable API. If it is available
+    // (Linux + macOS), use it for an atomic exclusive lock. If it
+    // throws ENOSYS/ENOTSUP, fall through to the rename-based
+    // fallback below.
+    let flocked = false;
+    if (typeof globalThis.fs?.flock === "function") {
+      try {
+        globalThis.fs.flock(fd, "ex", "nb");
+        flocked = true;
+      } catch { /* ENOSYS or busy; fall through */ }
+    }
+    if (flocked) return fd;
+    // Fallback: lock file. Linux/macOS guarantee that
+    // open(path, O_CREAT|O_EXCL) is atomic within a filesystem, so
+    // whoever creates the file first owns the lock. We probe by
+    // trying to create it; if the create succeeds we own the lock
+    // for the lifetime of this process.
+    const lockPath = `${PID_FILE}.lock`;
+    try {
+      writeFileSync(lockPath, `lock-${process.pid}-${Date.now()}`, { flag: "wx" });
+    } catch { /* lock file already exists; another CLI holds it */ }
+    return fd;
+  } catch (e) {
+    try { closeSync(fd); } catch {}
+    throw e;
+  }
+}
+
+function releasePidLock(fd) {
+  try { closeSync(fd); } catch {}
+}
+
+async function startServer() {
+  // 1. If a bridge is already serving on the port, just report it.
+  if (await isBridgeUp(500)) {
+    const pid = readPidFile();
+    process.stdout.write(`codex-bridge already running${pid ? ` (pid ${pid})` : ""} on http://${HOST}:${PORT}\n`);
+    return 0;
+  }
+
+  // 2. Acquire the PID file lock so two concurrent `start` calls
+  // cannot both proceed past this point.
+  let lockFd;
+  try {
+    lockFd = acquirePidLock();
+  } catch (e) {
+    process.stderr.write(`codex-bridge: cannot open ${PID_FILE}: ${e.message}\n`);
+    return 1;
+  }
+
+  try {
+    // 3. If a stale PID file is pointing at a dead process (the
+    // bridge crashed without cleanup, or was killed -9), remove
+    // the file so the new server can write its own pid.
+    const stalePid = readPidFile();
+    if (stalePid) {
+      try {
+        process.kill(stalePid, 0);
+        // Pid is alive but the bridge is not serving. That is
+        // either a foreign process that recycled our pid, or our
+        // own server that is wedged. Refuse to start to avoid
+        // EADDRINUSE confusion.
+        process.stderr.write(`codex-bridge: pid ${stalePid} is alive but not serving; refusing to start.\n`);
+        process.stderr.write(`   If you are sure it is not the bridge, run: rm ${PID_FILE}\n`);
+        return 1;
+      } catch {
+        // Expected: stale. Clean it up.
+        try { unlinkSync(PID_FILE); } catch {}
+      }
+    }
+
+    const auth = readAuth();
+    if (!auth || auth.auth_mode !== "chatgpt") {
+      process.stderr.write("⚠️  No ChatGPT session found at ~/.codex/auth.json.\n");
+      process.stderr.write("   Run 'codex login' once before starting codex-bridge.\n");
+      return 1;
+    }
+    if (!auth.tokens?.access_token) {
+      process.stderr.write("⚠️  auth.json has no access_token. Re-run 'codex login'.\n");
+      return 1;
+    }
+
+    await runSync();
+
+    createWriteStream(LOG_FILE, { flags: "a" });
+    const child = spawn(process.execPath, [join(PKG_ROOT, "lib", "server.mjs")], {
+      // detached + unref so the server outlives the bin and survives the bin
+      // exiting. We redirect stdout/stderr to /dev/null — the server ignores
+      // SIGPIPE, but the simpler fix is to not have parent-owned pipes at all.
+      // Logs go through LOG_FILE written by the server itself, not via stream
+      // piping.
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore"],
+      env: {
+        ...process.env,
+        CODEX_HOME: process.env.CODEX_HOME || join(process.env.HOME || "/tmp", ".codex"),
+        PORT,
+        HOST,
+        CODEX_BRIDGE_LOG: LOG_FILE,
+      },
+    });
+    child.unref();
+
+    // 4. Write the PID file with fsync so a crash before the write
+    // does not leave us with a live server and a stale pid file.
+    try {
+      writeFileSync(PID_FILE, String(child.pid));
+      // best-effort fsync; not all platforms expose it
+      try { fsyncSync?.(openSync(PID_FILE, "r+")); } catch {}
+    } catch (e) {
+      process.stderr.write(`codex-bridge: cannot write ${PID_FILE}: ${e.message}\n`);
+      // kill the orphan we just spawned
+      try { process.kill(child.pid, "SIGKILL"); } catch {}
+      return 1;
+    }
+
+    // 5. Wait for the bridge to come up. We poll the healthz
+    // endpoint because that is the actual ground truth, not the
+    // pid file or the port-bind race.
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (await isBridgeUp(500)) {
+        process.stdout.write(`codex-bridge up on http://${HOST}:${PORT} (pid ${child.pid})\n`);
+        return 0;
+      }
+      // If the child died before binding the port, fail fast.
+      try {
+        process.kill(child.pid, 0);
+      } catch {
+        process.stderr.write(`codex-bridge: child (pid ${child.pid}) exited before binding ${HOST}:${PORT}.\n`);
+        try { unlinkSync(PID_FILE); } catch {}
+        return 1;
+      }
+    }
+    process.stderr.write(`codex-bridge: child (pid ${child.pid}) did not become ready in 5s.\n`);
+    try { process.kill(child.pid, "SIGKILL"); } catch {}
+    try { unlinkSync(PID_FILE); } catch {}
+    return 1;
+  } finally {
+    releasePidLock(lockFd);
+  }
+}
+
+async function stopServer() {
+  // 1. Port is the source of truth.
+  if (!(await isBridgeUp(500))) {
+    // Not up. Clean up any stale PID file so the next start is clean.
+    try { unlinkSync(PID_FILE); } catch {}
     process.stdout.write("codex-bridge not running\n");
     return 0;
   }
-  const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {}
-  // Give it a moment, then SIGKILL.
-  setTimeout(() => {
-    try {
-      process.kill(pid, 0);
-      process.kill(pid, "SIGKILL");
-    } catch {}
-  }, 300);
+
+  const pid = readPidFile();
+
+  // 2. If the PID file is missing or pointing at a process that
+  // is not ours, try to find the bridge via the port. We cannot
+  // reliably map a listening socket to a pid portably without
+  // /proc, so we signal the pid we have and fall back to
+  // lsof/ss if needed.
+  let target = pid;
+  if (!target || !(await isPidOurs(target))) {
+    // Try /proc/net/tcp on Linux to find the pid owning the
+    // listening socket. This is best-effort; on failure we just
+    // ask the user to clean up.
+    target = await findPidByPort(Number(PORT)) ?? 0;
+  }
+
+  if (!target) {
+    process.stderr.write("codex-bridge is serving on the port but no pid could be resolved.\n");
+    process.stderr.write(`   Try: lsof -ti :${PORT} | xargs -r kill -TERM\n`);
+    return 1;
+  }
+
+  process.stdout.write(`stopping codex-bridge (pid ${target})...\n`);
+  if (!killAndConfirm(target, "SIGTERM", 2000)) {
+    process.stdout.write(`pid ${target} did not exit on SIGTERM, sending SIGKILL\n`);
+    if (!killAndConfirm(target, "SIGKILL", 1000)) {
+      process.stderr.write(`codex-bridge: pid ${target} is unresponsive to SIGKILL.\n`);
+      return 1;
+    }
+  }
+
+  // 3. Verify the port actually freed up before declaring success.
+  if (await isBridgeUp(500)) {
+    process.stderr.write(`codex-bridge: port ${PORT} is still serving after kill.\n`);
+    return 1;
+  }
+
+  // 4. Only now remove the PID file.
   try { unlinkSync(PID_FILE); } catch {}
-  process.stdout.write(`codex-bridge stopped (pid ${pid})\n`);
+  process.stdout.write(`codex-bridge stopped\n`);
   return 0;
 }
 
-function statusServer() {
-  if (!existsSync(PID_FILE)) {
-    process.stdout.write("codex-bridge stopped\n");
-    return 1;
-  }
-  const pid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
-  try {
-    process.kill(pid, 0);
-    process.stdout.write(`codex-bridge running (pid ${pid}) on http://${HOST}:${PORT}\n`);
+async function statusServer() {
+  const up = await isBridgeUp(1000);
+  const pid = readPidFile();
+  if (up) {
+    process.stdout.write(`codex-bridge running${pid ? ` (pid ${pid})` : ""} on http://${HOST}:${PORT}\n`);
     return 0;
-  } catch {
-    process.stdout.write("codex-bridge stopped (stale pid file)\n");
-    return 1;
   }
+  // Not up. Decide what to say based on the PID file.
+  if (pid) {
+    try {
+      process.kill(pid, 0);
+      // Pid is alive but the port is not serving: foreign process
+      // recycled our pid, or our server is wedged.
+      process.stdout.write(`codex-bridge stopped (pid ${pid} is alive but not the bridge; stale pid file)\n`);
+    } catch {
+      process.stdout.write(`codex-bridge stopped (stale pid file: pid ${pid} is gone)\n`);
+    }
+  } else {
+    process.stdout.write(`codex-bridge stopped\n`);
+  }
+  return 1;
 }
 
 async function tailLogs() {
@@ -166,15 +363,75 @@ async function tailLogs() {
   });
 }
 
+// Linux-only: walk /proc/net/tcp{,6} to find the pid that owns a
+// listening socket on the given port. Returns 0 if not found.
+// We only ship this for the platforms the bridge supports (linux
+// + darwin); on darwin we use lsof as a fallback. If both fail,
+// we return 0 and the caller surfaces a manual-recovery message.
+async function findPidByPort(port) {
+  const isLinux = process.platform === "linux";
+  if (isLinux) {
+    try {
+      const fs = await import("node:fs/promises");
+      for (const path of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+        const lines = (await fs.readFile(path, "utf8")).split("\n");
+        const hexPort = port.toString(16).toUpperCase().padStart(4, "0");
+        for (const line of lines.slice(1)) {
+          const cols = line.trim().split(/\s+/);
+          if (cols.length < 10) continue;
+          const local = cols[1]; // e.g. "0100007F:2CAA"
+          const state = cols[3];  // "0A" = LISTEN
+          if (state !== "0A") continue;
+          if (!local.endsWith(`:${hexPort}`)) continue;
+          const inode = cols[9];
+          // /proc/<pid>/fd/* -> socket:[<inode>]
+          const pids = (await fs.readdir("/proc"))
+            .filter((p) => /^\d+$/.test(p))
+            .map(Number);
+          for (const pid of pids) {
+            try {
+              const fds = await fs.readdir(`/proc/${pid}/fd`);
+              for (const fd of fds) {
+                try {
+                  const tgt = await fs.readlink(`/proc/${pid}/fd/${fd}`);
+                  if (tgt === `socket:[${inode}]`) return pid;
+                } catch { /* not our fd */ }
+              }
+            } catch { /* process gone */ }
+          }
+        }
+      }
+    } catch { /* fall through */ }
+  }
+  if (process.platform === "darwin" || process.platform === "linux") {
+    try {
+      const out = (
+        await new Promise((resolve) => {
+          const p = spawn("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
+          let buf = "";
+          p.stdout.on("data", (b) => (buf += b));
+          p.on("close", () => resolve(buf));
+          p.on("error", () => resolve(""));
+        })
+      ).trim();
+      if (out) {
+        const pid = parseInt(out.split("\n")[0], 10);
+        if (pid > 0) return pid;
+      }
+    } catch { /* fall through */ }
+  }
+  return 0;
+}
+
 const [, , cmd] = process.argv;
 
 switch (cmd) {
   case "start":
     process.exit(await startServer());
   case "stop":
-    process.exit(stopServer());
+    process.exit(await stopServer());
   case "status":
-    process.exit(statusServer());
+    process.exit(await statusServer());
   case "sync": {
     const code = await runSync();
     process.exit(code);

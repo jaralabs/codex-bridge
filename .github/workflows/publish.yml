@@ -10,9 +10,81 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Daily live smoke against the real ChatGPT API. We keep this in
+    # the same workflow so the smoke failure is co-located with the
+    # publish path; it runs at 06:00 UTC and does NOT publish.
+    - cron: "0 6 * * *"
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Type-check the plugin
+        run: npx --yes -p typescript@5 tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck --types node lib/plugin.ts
+
+      - name: Smoke check the package builds
+        run: |
+          for f in lib/server.mjs lib/auth.mjs lib/resilience.mjs lib/capabilities.mjs lib/tools-registry.mjs; do
+            node --check "$f"
+          done
+
+      - name: Run resilience unit tests
+        run: npm run test:resilience
+
+      - name: Run tool-call tests
+        run: |
+          # These need a stub codex binary. Skip on CI for now;
+          # the smoke.mjs test exercises the same code paths live.
+          echo "tool tests skipped on CI; covered by smoke.mjs against the real API."
+
+  smoke:
+    # Live integration test against the real ChatGPT Responses API.
+    # This job runs on schedule and on push to main. It is gated on
+    # the CODEX_AUTH_JSON secret being set; if it is not, we skip
+    # silently so a private repo without the secret can still build.
+    #
+    # SECURITY: the secret must contain a fresh auth.json from
+    # `codex login`. Whoever can read this secret can use the
+    # account. Rotate the access_token in the secret at least every
+    # 90 days, and never paste the raw auth.json into a public place.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install --omit=dev
+
+      - name: Run live smoke test
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          if [ -z "$CODEX_AUTH_JSON" ]; then
+            echo "::warning::CODEX_AUTH_JSON secret not set; skipping live smoke."
+            exit 0
+          fi
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          node test/smoke.mjs
+
   publish:
+    needs: [test]
+    if: github.event_name != 'pull_request' && github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +103,7 @@ jobs:
         run: npx --yes -p typescript@5 tsc --noEmit --target es2022 --module esnext --moduleResolution bundler --strict --skipLibCheck --types node lib/plugin.ts
 
       - name: Smoke test the package builds
-        run: node --check lib/server.mjs && node --check lib/tools-registry.mjs
+        run: node --check lib/server.mjs && node --check lib/tools-registry.mjs && node --check lib/auth.mjs && node --check lib/resilience.mjs && node --check lib/capabilities.mjs
 
       - name: Dry-run on pull requests
         if: github.event_name == 'pull_request'

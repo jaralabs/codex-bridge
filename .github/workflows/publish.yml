@@ -18,7 +18,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +58,7 @@ jobs:
     # account. Rotate the access_token in the secret at least every
     # 90 days, and never paste the raw auth.json into a public place.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -85,7 +85,7 @@ jobs:
   publish:
     needs: [test]
     if: github.event_name != 'pull_request' && github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Trusted publishing: actions/setup-node with registry-url exchanges
     # the GitHub OIDC token for a short-lived npm token at runtime.
     # The trusted publisher is configured on the package itself

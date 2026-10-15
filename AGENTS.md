@@ -1,5 +1,13 @@
 # codex-bridge / agent notes
 
+> **Disclaimer.** This project is not affiliated with, endorsed by, or
+> sponsored by OpenAI. It reuses the OAuth session in
+> `~/.codex/auth.json` (written by the official Codex CLI) and speaks the
+> same upstream endpoint (`chatgpt.com/backend-api/codex/responses`) the
+> CLI itself uses. The endpoint is not part of any published OpenAI API
+> and can change without notice. Use it for your own account; do not sell
+> it or redistribute access.
+
 This file tells an OpenCode agent (or a human) how the bridge is wired so
 that OpenCode behaves as if ChatGPT Plus were running natively.
 

@@ -1,5 +1,15 @@
 # @jaralabs/codex-bridge
 
+> **Disclaimer.** This project is not affiliated with, endorsed by, or
+> sponsored by OpenAI. It is an independent tool that reuses the OAuth
+> session written by the official Codex CLI to `~/.codex/auth.json` and
+> speaks the same upstream endpoint (`chatgpt.com/backend-api/codex/responses`)
+> that the CLI itself uses. The endpoint is not part of any published OpenAI
+> API, so the bridge can stop working the day OpenAI rotates it. Use it as
+> a developer convenience for your own account, not as a service you sell
+> or redistribute. The authors and contributors are not responsible for
+> account actions taken by OpenAI as a result of how you use this tool.
+
 > Use your ChatGPT Business / Team / Plus subscription from OpenCode instead
 > of paying for the OpenAI API.
 

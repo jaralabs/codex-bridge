@@ -88,19 +88,22 @@ async function startServer() {
   const err = process.stderr;
   const logStream = createWriteStream(LOG_FILE, { flags: "a" });
   const child = spawn(process.execPath, [join(PKG_ROOT, "lib", "server.mjs")], {
-    stdio: ["ignore", "pipe", "pipe"],
+    // detached + unref so the server outlives the bin and survives the bin
+    // exiting. We redirect stdout/stderr to /dev/null — the server ignores
+    // SIGPIPE, but the simpler fix is to not have parent-owned pipes at all.
+    // Logs go through LOG_FILE written by the server itself, not via stream
+    // piping.
+    detached: true,
+    stdio: ["ignore", "ignore", "ignore"],
     env: {
       ...process.env,
       CODEX_HOME: process.env.CODEX_HOME || join(process.env.HOME || "/tmp", ".codex"),
       PORT,
       HOST,
+      CODEX_BRIDGE_LOG: LOG_FILE,
     },
   });
-  child.stdout.pipe(logStream);
-  child.stderr.pipe(logStream);
-  // Also surface stderr to the controlling terminal for the first ~1s so the
-  // user sees the "listening" banner immediately, then silence stdout.
-  child.stderr.pipe(err, { end: false });
+  child.unref();
   writeFileSync(PID_FILE, String(child.pid));
 
   // Wait for the bridge to come up (or fail).
@@ -110,13 +113,6 @@ async function startServer() {
       const r = await fetch(`http://${HOST}:${PORT}/v1/models`);
       if (r.ok) {
         out.write(`codex-bridge up on http://${HOST}:${PORT} (pid ${child.pid})\n`);
-        // Now disown: closing stdout/stderr handles would kill the child.
-        child.stdout.unpipe();
-        child.stderr.unpipe(err);
-        child.stdout.unpipe(logStream);
-        child.stderr.unpipe(logStream);
-        child.stdout.on("data", () => {});
-        child.stderr.on("data", () => {});
         return 0;
       }
     } catch {}

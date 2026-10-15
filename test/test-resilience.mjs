@@ -9,6 +9,7 @@ import {
   circuitStatus,
   circuitPermits,
   metrics,
+  recordUsage,
   retryConfig,
 } from "../lib/resilience.mjs";
 
@@ -118,6 +119,42 @@ const m1 = metrics();
 check("metrics.requests is a number", typeof m1.requests === "number");
 check("metrics.circuit is a string", typeof m1.circuit === "string");
 check("metrics.circuitFailuresInWindow is a number", typeof m1.circuitFailuresInWindow === "number");
+check("metrics.tokens is an object", m1.tokens && typeof m1.tokens === "object");
+check("metrics.tokens.prompt is a number", typeof m1.tokens.prompt === "number");
+check("metrics.tokens.completion is a number", typeof m1.tokens.completion === "number");
+check("metrics.tokens.total is a number", typeof m1.tokens.total === "number");
+
+// 7b. recordUsage accumulates correctly. The module state is shared
+// across tests, so we read the totals, record a known delta, and
+// verify the totals moved by exactly that delta.
+{
+  const before = metrics().tokens;
+  const u = { input_tokens: 12, output_tokens: 34, total_tokens: 46 };
+  recordUsage(u);
+  const after = metrics().tokens;
+  check("recordUsage: prompt delta", after.prompt - before.prompt === 12, `delta=${after.prompt - before.prompt}`);
+  check("recordUsage: completion delta", after.completion - before.completion === 34, `delta=${after.completion - before.completion}`);
+  check("recordUsage: total delta", after.total - before.total === 46, `delta=${after.total - before.total}`);
+}
+
+// 7c. recordUsage tolerates missing fields.
+{
+  const before = metrics().tokens;
+  recordUsage({ input_tokens: 5 });
+  const after = metrics().tokens;
+  check("recordUsage: missing output_tokens defaults to 0", after.completion === before.completion);
+  check("recordUsage: missing total_tokens defaults to prompt+0", after.total - before.total === 5);
+}
+
+// 7d. recordUsage ignores null / non-object input without throwing.
+{
+  const before = metrics().tokens;
+  recordUsage(null);
+  recordUsage(undefined);
+  recordUsage(42);
+  const after = metrics().tokens;
+  check("recordUsage: no-op on bad input", after.total === before.total);
+}
 
 // 8. circuitPermits is true by default (the module is fresh, but
 // other tests may have failed the circuit; verify we can recover

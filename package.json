@@ -1,6 +1,6 @@
 {
   "name": "@jaralabs/codex-bridge",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": false,
   "description": "OpenAI-compatible HTTP bridge that reuses a local ChatGPT Business / Team / Plus session via codex, so OpenCode can list and call those models without paying for the OpenAI API.",
   "type": "module",

@@ -39,12 +39,49 @@ that OpenCode behaves as if ChatGPT Plus were running natively.
   plugin registers tools here on session start, and the server
   injects them into the system prompt when the request has no
   explicit `tools` array.
+- `lib/reasoning.mjs` — maps a client `reasoning_effort` onto the
+  efforts the upstream Responses API accepts (`none`, `minimal`, `low`,
+  `medium`, `high`, `xhigh`, `max`). Unknown values are dropped, so a
+  level the upstream rejects never reaches it.
+- `lib/pi-models.mjs` — generates the `chatgpt` provider block for a Pi
+  agent directory's `models.json`, derived from the Codex model cache.
+  Other providers in the file are preserved.
 - `lib/plugin.ts` — OpenCode plugin. Registers the `chatgpt` provider,
   default MCP servers (Doop, codegraph, codegraph-fe, angecom), and a
   V2 permission policy that mirrors the ChatGPT Plus UX.
 - `lib/sync-cache.mjs` — pulls the model list from
   `~/.codex/models_cache.json` into `opencode.jsonc`.
 - `bin/codex-bridge` — CLI: `start`, `stop`, `status`, `sync`, `logs`.
+- `bin/codex-bridge-service` — foreground launcher for the systemd
+  unit. Resolves the Node runtime and the package at every start, writes
+  the PID file the CLI uses, and refreshes the Pi model list before the
+  server comes up.
+- `install/codex-bridge.service` — systemd user unit template.
+- `install/install-service.sh` — installs the wrapper and the unit,
+  enables the service, turns on linger, and waits for the port to
+  answer. `uninstall` removes both.
+
+## Run it as a service
+
+```bash
+install/install-service.sh            # install + enable + start
+systemctl --user status codex-bridge  # is it up?
+journalctl --user -u codex-bridge -f  # tail the logs
+install/install-service.sh uninstall  # remove it
+```
+
+The CLI still works against a systemd-managed instance: `status` and
+`stop` treat the port as the source of truth, not the PID file.
+
+## Wire it into Pi
+
+```bash
+node lib/pi-models.mjs   # write <agent-dir>/models.json
+codex-bridge sync        # same, plus the OpenCode model list
+```
+
+Pi picks the provider up as `chatgpt/<model>`. The service runs the same
+sync at every start, so the model list follows the Codex cache.
 
 ## Install the plugin
 
@@ -118,12 +155,18 @@ Environment variables the plugin honors:
 ## Tests
 
 ```bash
-npm test                # smoke (server up, /healthz, /v1/models, chat)
-npm run test:tools      # tool transport, registry, multi-turn loop
-npm run test:resilience # retry, circuit breaker, metrics (pure unit)
-npm run test:smoke      # live integration test against the real ChatGPT
-                        # API (requires ~/.codex/auth.json)
+npm test                 # smoke (server up, /healthz, /v1/models, chat)
+npm run test:tools       # tool transport, registry, multi-turn loop
+npm run test:resilience  # retry, circuit breaker, metrics (pure unit)
+npm run test:reasoning   # reasoning-effort mapping (pure unit)
+npm run test:pi-models   # Pi provider generation (pure unit)
+npm run test:smoke       # live integration test against the real ChatGPT
+                         # API (requires ~/.codex/auth.json)
 ```
+
+`npm test` and `npm run test:tools` need a running bridge and a real
+ChatGPT session. `test:tools` talks to the bridge over HTTP; point it at
+another instance with `BASE=http://host:port`.
 
 The resilience and smoke tests run in CI. The daily cron runs `test:smoke`
 to detect wire-shape drift the day OpenAI changes something.

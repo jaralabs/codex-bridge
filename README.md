@@ -56,6 +56,42 @@ Requires:
   reads `~/.codex/auth.json` for the OAuth tokens. After the first login,
   the CLI is no longer required at runtime.
 
+## Run it as a service (recommended)
+
+The service makes the bridge start at boot and keeps it alive, so no
+client has to start it by hand:
+
+```bash
+install/install-service.sh            # install + enable + start
+systemctl --user status codex-bridge  # is it up?
+journalctl --user -u codex-bridge -f  # tail the logs
+install/install-service.sh uninstall  # remove the service
+```
+
+The unit points at `bin/codex-bridge-service`, a wrapper that resolves the
+Node runtime and the package at every start, so a Node or npm upgrade does
+not break the service. The wrapper also refreshes the Pi model list before
+the server comes up.
+
+The CLI keeps working against a systemd-managed instance: `status` and
+`stop` use the port as the source of truth.
+
+Without the service, the bridge runs in the foreground or as a detached
+process:
+
+```bash
+codex-bridge start    # sync models + start HTTP server in background
+codex-bridge status   # is it up?
+codex-bridge logs     # tail the server log
+codex-bridge stop     # kill the server
+```
+
+Other useful commands:
+
+```bash
+codex-bridge sync     # only sync the model list (no server)
+```
+
 ## Wire it into OpenCode
 
 There are two pieces: the bridge running on `127.0.0.1:11434`, and the
@@ -104,6 +140,35 @@ In OpenCode, choose one of the `chatgpt/*` models from the picker and chat
 normally. Tool calls (Doop, codegraph, etc.) round-trip through the bridge
 and trigger the OpenCode approval prompt when the policy says `ask`.
 
+## Wire it into Pi (and gentle-shell)
+
+Pi reads `<agent-dir>/models.json` for OpenAI-compatible endpoints, so the
+same bridge can serve Pi as well. The model list is derived from
+`~/.codex/models_cache.json`, so it follows whatever the Codex CLI logged in
+with.
+
+```bash
+node lib/pi-models.mjs        # write the provider into the Pi agent dirs
+codex-bridge sync             # same thing, plus the OpenCode model list
+```
+
+It writes into every agent directory it finds: `$PI_CODING_AGENT_DIR`,
+`$GENTLE_PI_AGENT_HOME`, `~/.gentle-shell/agent` and `~/.pi/agent`. Other
+providers already in `models.json` are preserved; only the `chatgpt` block is
+replaced. The service wrapper runs the same script at every start.
+
+After that the models show up in Pi's picker as `chatgpt/<model>`:
+
+```bash
+pi --list-models | grep chatgpt
+pi -p --model chatgpt/gpt-6-luna "hello"
+```
+
+Pi's thinking levels map onto the upstream efforts: `off` becomes `none`,
+`minimal` stays `minimal`, and `low`..`max` pass through unchanged. The
+upstream rejects the `ultra` level the Codex cache lists, so the bridge
+never sends it.
+
 ## Endpoints
 
 | Method | Path | Purpose |
@@ -141,9 +206,19 @@ and trigger the OpenCode approval prompt when the policy says `ask`.
 npm test              # smoke (server up, /healthz, /v1/models, chat)
 npm run test:tools    # tool transport, registry, multi-turn loop
 npm run test:resilience  # retry, circuit breaker, metrics (pure unit)
+npm run test:reasoning   # reasoning-effort mapping (pure unit)
+npm run test:pi-models   # Pi provider generation (pure unit)
 npm run test:smoke    # live integration test against the real ChatGPT API
                        # (requires ~/.codex/auth.json on the machine)
 ```
+
+`npm test` and `npm run test:tools` need a running bridge
+(`codex-bridge start` or the systemd service) and a real ChatGPT session.
+`test:tools` talks to the bridge over HTTP: it checks the registry
+lifecycle, that the registry is injected into the instructions when the
+request carries no explicit `tools`, that explicit tools win over the
+registry, and the multi-turn tool loop over both JSON and streamed
+responses. Point it at another instance with `BASE=http://host:port`.
 
 The `test:smoke` script is what the GitHub Actions daily cron runs to catch
 wire-shape drift the day OpenAI changes something. Set

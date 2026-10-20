@@ -4,6 +4,39 @@ All notable changes to `@jaralabs/codex-bridge` are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `install/codex-bridge.service` + `install/install-service.sh` — the
+  bridge now runs as a systemd user service: it starts at boot (linger)
+  and restarts on failure, instead of only coming up when someone runs
+  `devenv` or `codex-bridge start` by hand.
+- `bin/codex-bridge-service` — foreground launcher for the unit. It
+  resolves the Node runtime and the package at every start, so a Node or
+  npm upgrade does not break the service, and it refreshes the Pi model
+  list before the server comes up.
+- `lib/pi-models.mjs` — writes the `chatgpt` provider into a Pi agent
+  directory's `models.json`, so Pi and gentle-shell can use the same
+  ChatGPT Business plan as OpenCode. Other providers in the file are
+  preserved.
+- `lib/reasoning.mjs` + `npm run test:reasoning` — the bridge now
+  forwards the client's `reasoning_effort` to the upstream Responses API
+  as `reasoning: { effort }`. Pi's thinking levels were silently dropped
+  before.
+- `npm run test:pi-models` — unit tests for the Pi provider generation.
+- Debug headers on every chat response: `x-codex-bridge-instructions-len`,
+  `x-codex-bridge-tools` and `x-codex-bridge-reasoning` report what
+  actually reached the upstream API.
+
+### Fixed
+- A rejected promise inside the chat-completions handler escaped the
+  route try/catch and killed the whole process. The handler is awaited
+  now, so a bad request returns 500 instead of taking the bridge down.
+- `npm run test:tools` required a `CODEX_BIN` stub binary from an
+  architecture the bridge left behind and exited 2 everywhere. It now
+  runs against a live bridge over HTTP and covers the registry, the
+  registry injection, explicit tools, and the multi-turn tool loop.
+
 ## [0.4.1] - 2026-10-15
 
 ### Changed

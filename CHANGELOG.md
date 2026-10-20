@@ -4,7 +4,7 @@ All notable changes to `@jaralabs/codex-bridge` are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-19
 
 ### Added
 - `install/codex-bridge.service` + `install/install-service.sh` — the

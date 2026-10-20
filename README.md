@@ -62,10 +62,19 @@ The service makes the bridge start at boot and keeps it alive, so no
 client has to start it by hand:
 
 ```bash
-install/install-service.sh            # install + enable + start
+# from a checkout of this repository
+install/install-service.sh
+
+# from the published package
+"$(npm root -g)/@jaralabs/codex-bridge/install/install-service.sh"
+```
+
+Either way you get the same unit:
+
+```bash
 systemctl --user status codex-bridge  # is it up?
 journalctl --user -u codex-bridge -f  # tail the logs
-install/install-service.sh uninstall  # remove the service
+"$(npm root -g)/@jaralabs/codex-bridge/install/install-service.sh" uninstall
 ```
 
 The unit points at `bin/codex-bridge-service`, a wrapper that resolves the

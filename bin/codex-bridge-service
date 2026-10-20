@@ -1,0 +1,85 @@
+#!/bin/sh
+# Foreground launcher for codex-bridge, meant to be run by systemd.
+#
+# Why a wrapper instead of pointing the unit straight at the server:
+# the bridge usually lives inside a versioned Node install (mise, nvm,
+# a distro package). A unit with a hardcoded path breaks the day that
+# install moves. This script resolves the runtime and the package at
+# every start, so the service survives a Node upgrade.
+#
+# It also writes the PID file the `codex-bridge` CLI uses, so
+# `codex-bridge status` and `codex-bridge stop` keep working against a
+# systemd-managed instance.
+#
+# Environment:
+#   PORT                 port to listen on (default 11434)
+#   HOST                 interface to bind (default 127.0.0.1)
+#   CODEX_BRIDGE_LOG     log file (default ~/.local/state/codex-bridge/server.log)
+#   CODEX_BRIDGE_PID     pid file (default /tmp/codex-bridge.pid)
+#   CODEX_BRIDGE_PKG     explicit path to the package root (auto-detected)
+
+set -eu
+
+PORT="${PORT:-11434}"
+HOST="${HOST:-127.0.0.1}"
+PID_FILE="${CODEX_BRIDGE_PID:-/tmp/codex-bridge.pid}"
+LOG_FILE="${CODEX_BRIDGE_LOG:-$HOME/.local/state/codex-bridge/server.log}"
+
+log() { printf '%s codex-bridge-service: %s\n' "$(date -Is)" "$1" >&2; }
+
+# --- resolve the node runtime -------------------------------------------
+NODE="${CODEX_BRIDGE_NODE:-}"
+if [ -z "$NODE" ]; then
+  if command -v node >/dev/null 2>&1; then
+    NODE="$(command -v node)"
+  else
+    # mise keeps one install per version; take the newest directory.
+    for candidate in "$HOME"/.local/share/mise/installs/node/*/bin/node \
+                     "$HOME"/.nvm/versions/node/*/bin/node; do
+      [ -x "$candidate" ] && NODE="$candidate"
+    done
+  fi
+fi
+if [ -z "$NODE" ] || [ ! -x "$NODE" ]; then
+  log "no node runtime found; set CODEX_BRIDGE_NODE"
+  exit 1
+fi
+
+# --- resolve the package -------------------------------------------------
+SERVER=""
+if [ -n "${CODEX_BRIDGE_PKG:-}" ] && [ -f "${CODEX_BRIDGE_PKG}/lib/server.mjs" ]; then
+  SERVER="${CODEX_BRIDGE_PKG}/lib/server.mjs"
+else
+  # A checkout next to this script wins: it is the source of truth for a
+  # developer running from a clone.
+  SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  if [ -f "${SCRIPT_DIR}/../lib/server.mjs" ]; then
+    SERVER="$(cd "${SCRIPT_DIR}/.." && pwd)/lib/server.mjs"
+  else
+    # Otherwise look for the globally installed package.
+    for candidate in \
+      "$HOME"/.local/share/mise/installs/node/*/lib/node_modules/@jaralabs/codex-bridge/lib/server.mjs \
+      "$HOME"/.nvm/versions/node/*/lib/node_modules/@jaralabs/codex-bridge/lib/server.mjs \
+      /usr/lib/node_modules/@jaralabs/codex-bridge/lib/server.mjs \
+      /usr/local/lib/node_modules/@jaralabs/codex-bridge/lib/server.mjs; do
+      [ -f "$candidate" ] && SERVER="$candidate"
+    done
+  fi
+fi
+if [ -z "$SERVER" ]; then
+  log "codex-bridge package not found; set CODEX_BRIDGE_PKG"
+  exit 1
+fi
+
+mkdir -p "$(dirname "$LOG_FILE")"
+
+export PORT HOST
+export CODEX_BRIDGE_LOG="$LOG_FILE"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+
+# The CLI treats the pid file as a hint and the port as the truth, but
+# keeping the pid file accurate makes `codex-bridge status` informative.
+echo $$ > "$PID_FILE"
+
+log "starting $SERVER on http://${HOST}:${PORT} (log: $LOG_FILE)"
+exec "$NODE" "$SERVER"

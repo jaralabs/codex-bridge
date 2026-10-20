@@ -1,0 +1,22 @@
+[Unit]
+Description=codex-bridge - ChatGPT Business subscription as an OpenAI-compatible API
+Documentation=https://github.com/jaralabs/codex-bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The wrapper resolves the Node runtime and the package at start time,
+# so a Node upgrade does not break the service.
+ExecStart=@WRAPPER@
+Restart=always
+RestartSec=3
+Environment=PORT=11434
+Environment=HOST=127.0.0.1
+Environment=CODEX_BRIDGE_LOG=%h/.local/state/codex-bridge/server.log
+Environment=CODEX_BRIDGE_PID=/tmp/codex-bridge.pid
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

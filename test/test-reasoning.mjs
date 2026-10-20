@@ -15,8 +15,8 @@ function check(name, ok, extra) {
 }
 
 // --- Pi thinking levels map onto supported upstream efforts ---
-check("off -> low", resolveReasoningEffort("off") === "low");
-check("minimal -> low", resolveReasoningEffort("minimal") === "low");
+check("off -> none", resolveReasoningEffort("off") === "none");
+check("minimal -> minimal", resolveReasoningEffort("minimal") === "minimal");
 check("low -> low", resolveReasoningEffort("low") === "low");
 check("medium -> medium", resolveReasoningEffort("medium") === "medium");
 check("high -> high", resolveReasoningEffort("high") === "high");
@@ -41,8 +41,8 @@ for (const effort of SUPPORTED_EFFORTS) {
 
 // --- The upstream set is exactly the documented one ---
 check(
-  "supported efforts are low..max",
-  SUPPORTED_EFFORTS.join(",") === "low,medium,high,xhigh,max",
+  "supported efforts are none..max",
+  SUPPORTED_EFFORTS.join(",") === "none,minimal,low,medium,high,xhigh,max",
   SUPPORTED_EFFORTS.join(",")
 );
 

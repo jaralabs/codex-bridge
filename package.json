@@ -35,6 +35,7 @@
     "test": "node test/test.mjs",
     "test:tools": "node test/test-tools.mjs",
     "test:resilience": "node test/test-resilience.mjs",
+    "test:reasoning": "node test/test-reasoning.mjs",
     "test:smoke": "node test/smoke.mjs"
   },
   "repository": {

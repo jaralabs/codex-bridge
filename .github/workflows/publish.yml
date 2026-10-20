@@ -41,17 +41,21 @@ jobs:
 
       - name: Smoke check the package builds
         run: |
-          for f in lib/server.mjs lib/auth.mjs lib/resilience.mjs lib/capabilities.mjs lib/tools-registry.mjs; do
+          for f in lib/server.mjs lib/auth.mjs lib/resilience.mjs lib/capabilities.mjs lib/tools-registry.mjs lib/reasoning.mjs; do
             node --check "$f"
           done
 
       - name: Run resilience unit tests
         run: npm run test:resilience
 
+      - name: Run reasoning-mapping unit tests
+        run: npm run test:reasoning
+
       - name: Run tool-call tests
         run: |
-          # These need a stub codex binary. Skip on CI for now;
-          # the smoke.mjs test exercises the same code paths live.
+          # These need a live bridge plus a real ChatGPT session, so they
+          # only run on a developer machine with `codex-bridge start` up.
+          # CI covers the same code paths with smoke.mjs against the real API.
           echo "tool tests skipped on CI; covered by smoke.mjs against the real API."
 
   smoke:

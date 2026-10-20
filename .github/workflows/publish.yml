@@ -51,6 +51,9 @@ jobs:
       - name: Run reasoning-mapping unit tests
         run: npm run test:reasoning
 
+      - name: Run Pi provider unit tests
+        run: npm run test:pi-models
+
       - name: Run tool-call tests
         run: |
           # These need a live bridge plus a real ChatGPT session, so they

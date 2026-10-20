@@ -57,7 +57,19 @@ function runSync() {
       stdio: "inherit",
       env: { ...process.env, CODEX_HOME: process.env.CODEX_HOME || join(process.env.HOME || "/tmp", ".codex") },
     });
-    child.on("close", (code) => resolve(code ?? 0));
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve(code ?? 0);
+        return;
+      }
+      // Also refresh the Pi agent directories so the `chatgpt` provider
+      // in Pi / gentle-shell keeps the same model list as OpenCode.
+      const pi = spawn(process.execPath, [join(PKG_ROOT, "lib", "pi-models.mjs")], {
+        stdio: "inherit",
+        env: { ...process.env, CODEX_HOME: process.env.CODEX_HOME || join(process.env.HOME || "/tmp", ".codex") },
+      });
+      pi.on("close", (piCode) => resolve(piCode ?? 0));
+    });
   });
 }
 

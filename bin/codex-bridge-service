@@ -77,6 +77,14 @@ export PORT HOST
 export CODEX_BRIDGE_LOG="$LOG_FILE"
 export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 
+# Refresh the Pi provider list before the server comes up, so a model
+# rename upstream does not leave Pi pointing at a model that no longer
+# exists. Best effort: a broken cache must not keep the bridge down.
+PKG_ROOT="$(dirname -- "$(dirname -- "$SERVER")")"
+if [ -f "${PKG_ROOT}/lib/pi-models.mjs" ]; then
+  "$NODE" "${PKG_ROOT}/lib/pi-models.mjs" || log "warning: Pi model sync failed"
+fi
+
 # The CLI treats the pid file as a hint and the port as the truth, but
 # keeping the pid file accurate makes `codex-bridge status` informative.
 echo $$ > "$PID_FILE"

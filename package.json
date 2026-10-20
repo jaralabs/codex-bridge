@@ -36,6 +36,7 @@
     "test:tools": "node test/test-tools.mjs",
     "test:resilience": "node test/test-resilience.mjs",
     "test:reasoning": "node test/test-reasoning.mjs",
+    "test:pi-models": "node test/test-pi-models.mjs",
     "test:smoke": "node test/smoke.mjs"
   },
   "repository": {

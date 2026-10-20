@@ -4,6 +4,15 @@ All notable changes to `@jaralabs/codex-bridge` are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/) and the
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-10-19
+
+### Fixed
+- The live smoke test gave up on the first 401. A stored `auth.json` (a
+  CI secret, a snapshot taken on another machine) carries an access token
+  that expires, while the refresh token usually outlives it. The smoke
+  test now refreshes once and retries, and says what to do when even the
+  refresh token is dead.
+
 ## [0.5.0] - 2026-10-19
 
 ### Added

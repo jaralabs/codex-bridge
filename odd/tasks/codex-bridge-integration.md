@@ -47,6 +47,14 @@ the remainder moved to the docs slice.
 - L2: "Borralo o sobrescribe el punto 1, deberiamos tener un autostart, ademas
   deberiamos configurarlo para poder usarlo aca en gentle-shell"
 - L3: "Ah el autostart esta de manera manual cuando corro devenv"
+- L4: "Vale hagamos commits y publiquemos no?"
+- L5: "Esta fallando el smoke por que?" — the CI smoke job failed with
+  `token_expired`: the access token inside the `CODEX_AUTH_JSON` secret is
+  stale. The smoke test never refreshed, so a 401 ended the run even when
+  the refresh token was still good. Fixed in 0.5.1: the smoke test
+  refreshes once and retries, and prints how to replace a dead secret.
+  The secret itself still has to be re-uploaded when its refresh token
+  dies: `gh secret set CODEX_AUTH_JSON < ~/.codex/auth.json`.
 
 ### Evidence (L1)
 

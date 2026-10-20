@@ -12,7 +12,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getAuth } from "../lib/auth.mjs";
+import { getAuth, refreshAccessToken } from "../lib/auth.mjs";
 import { probeCapabilities } from "../lib/capabilities.mjs";
 
 const CODEX_HOME = process.env.CODEX_HOME || join(homedir(), ".codex");
@@ -49,8 +49,34 @@ async function main() {
     return process.exit(1);
   }
 
+  // 1b. The access token in a stored auth.json (a CI secret, a snapshot
+  //     from another machine) expires. The refresh token usually outlives
+  //     it, so a 401 is not the end of the run: refresh once and retry.
+  //     Only a dead refresh token means the secret has to be replaced.
+  const refreshAuth = async () => {
+    if (!auth.refresh_token) {
+      console.error("no refresh_token in auth.json; re-run `codex login`.");
+      return false;
+    }
+    try {
+      auth = await refreshAccessToken(auth.refresh_token);
+      console.log("refreshed the expired access token; retrying.");
+      return true;
+    } catch (e) {
+      console.error(`could not refresh the access token: ${e?.message || e}`);
+      console.error(
+        "The stored session is exhausted. Re-upload a fresh auth.json " +
+          "(gh secret set CODEX_AUTH_JSON < ~/.codex/auth.json)."
+      );
+      return false;
+    }
+  };
+
   // 2. Capability probe
-  const caps = await probeCapabilities({ log: () => {} });
+  let caps = await probeCapabilities({ log: () => {} });
+  if (!caps.ok && caps.status === 401 && (await refreshAuth())) {
+    caps = await probeCapabilities({ log: () => {} });
+  }
   check("capabilities probe ok", caps.ok, JSON.stringify({ status: caps.status, err: caps.error }));
   check("capability resolvedModel set", !!caps.resolvedModel, caps.resolvedModel);
   check("capability events include response.completed",
@@ -73,7 +99,7 @@ async function main() {
     ],
     prompt_cache_key: `smoke-${Date.now()}`,
   };
-  const res = await fetch(`${CHATGPT_BASE}/responses`, {
+  const send = () => fetch(`${CHATGPT_BASE}/responses`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${auth.access_token}`,
@@ -84,6 +110,10 @@ async function main() {
     },
     body: JSON.stringify(body),
   });
+  let res = await send();
+  if (res.status === 401 && (await refreshAuth())) {
+    res = await send();
+  }
   check("smoke request returns 2xx", res.status >= 200 && res.status < 300, `status=${res.status}`);
 
   if (res.ok) {
